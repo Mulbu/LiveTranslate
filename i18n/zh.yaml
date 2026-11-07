@@ -135,6 +135,13 @@ group_timeout: "模型连接超时"
 group_network: "网络配置"
 label_timeout: "模型连接超时"
 
+group_glossary: "术语表"
+glossary_source: "原文"
+glossary_target: "译文"
+glossary_add: "添加"
+glossary_remove: "删除"
+glossary_tooltip: "添加术语对照，模型将严格按此翻译"
+
 # 基准测试标签页
 label_source: "源语言:"
 btn_test_all: "测试全部模型"

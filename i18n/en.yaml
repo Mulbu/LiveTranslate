@@ -135,6 +135,13 @@ group_timeout: "Model Connect Timeout"
 group_network: "Network"
 label_timeout: "Model Connect Timeout"
 
+group_glossary: "Glossary"
+glossary_source: "Source"
+glossary_target: "Translation"
+glossary_add: "Add"
+glossary_remove: "Remove"
+glossary_tooltip: "Add term pairs; the model will strictly follow these translations"
+
 # Benchmark tab
 label_source: "Source:"
 btn_test_all: "Test All Models"

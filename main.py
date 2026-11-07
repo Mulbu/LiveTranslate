@@ -329,6 +329,8 @@ class LiveTranslateApp:
             self._translator.set_timeout(settings["timeout"])
         if "auto_save_transcript" in settings:
             self._transcript.set_enabled(settings["auto_save_transcript"])
+        if "glossary" in settings and self._translator:
+            self._translator.set_glossary(settings["glossary"])
 
     def _mark_asr_unavailable(self, reason: str, client=None):
         with self._asr_lock:
@@ -472,12 +474,13 @@ class LiveTranslateApp:
         timeout = 10
         if self._panel:
             timeout = self._panel.get_settings().get("timeout", 10)
+        glossary = self._panel.get_settings().get("glossary", []) if self._panel else []
         self._translator = Translator(
             api_base=model_config["api_base"],
             api_key=model_config["api_key"],
             model=model_config["model"],
             target_language=self._target_language,
-            max_tokens=self._config["translation"]["max_tokens"],
+            max_tokens=model_config.get("max_tokens") or self._config["translation"]["max_tokens"],
             temperature=self._config["translation"]["temperature"],
             streaming=model_config.get("streaming", True),
             system_prompt=prompt,
@@ -488,6 +491,7 @@ class LiveTranslateApp:
             timeout=timeout,
             overrides=model_config.get("overrides"),
             extra_body=model_config.get("extra_body"),
+            glossary=glossary,
         )
         context_turns = model_config.get(
             "context_turns", self._config["translation"].get("context_window", 0)

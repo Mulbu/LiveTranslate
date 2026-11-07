@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -23,6 +24,8 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSlider,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -608,6 +611,36 @@ class ControlPanel(QWidget):
         self._timeout_spin.valueChanged.connect(self._auto_save)
         net_layout.addWidget(self._timeout_spin, 0, 1)
         layout.addWidget(net_group)
+
+        # ── Glossary ──
+        glossary_group = QGroupBox(t("group_glossary"))
+        glossary_layout = QVBoxLayout(glossary_group)
+
+        self._glossary_table = QTableWidget(0, 2)
+        self._glossary_table.setHorizontalHeaderLabels([
+            t("glossary_source"), t("glossary_target")
+        ])
+        self._glossary_table.horizontalHeader().setStretchLastSection(True)
+        self._glossary_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch
+        )
+        self._glossary_table.setMinimumHeight(120)
+        glossary_entries = s.get("glossary", [])
+        for entry in glossary_entries:
+            self._add_glossary_row(entry.get("source", ""), entry.get("target", ""))
+        self._glossary_table.itemChanged.connect(self._on_glossary_changed)
+        glossary_layout.addWidget(self._glossary_table)
+
+        glossary_btn_row = QHBoxLayout()
+        add_glossary_btn = QPushButton(t("glossary_add"))
+        add_glossary_btn.clicked.connect(self._add_glossary_entry)
+        glossary_btn_row.addWidget(add_glossary_btn)
+        del_glossary_btn = QPushButton(t("glossary_remove"))
+        del_glossary_btn.clicked.connect(self._remove_glossary_entry)
+        glossary_btn_row.addWidget(del_glossary_btn)
+        glossary_layout.addLayout(glossary_btn_row)
+
+        layout.addWidget(glossary_group)
 
         layout.addStretch()
         return widget
@@ -1347,6 +1380,44 @@ class ControlPanel(QWidget):
         else:
             self._bench_output.append(text)
 
+    # ── Glossary ──
+
+    def _add_glossary_row(self, source="", target=""):
+        row = self._glossary_table.rowCount()
+        self._glossary_table.insertRow(row)
+        self._glossary_table.setItem(row, 0, QTableWidgetItem(source))
+        self._glossary_table.setItem(row, 1, QTableWidgetItem(target))
+
+    def _add_glossary_entry(self):
+        self._glossary_table.blockSignals(True)
+        self._add_glossary_row()
+        self._glossary_table.blockSignals(False)
+        self._glossary_table.setCurrentCell(
+            self._glossary_table.rowCount() - 1, 0
+        )
+        self._on_glossary_changed()
+
+    def _remove_glossary_entry(self):
+        row = self._glossary_table.currentRow()
+        if row >= 0:
+            self._glossary_table.removeRow(row)
+            self._on_glossary_changed()
+
+    def _collect_glossary(self) -> list:
+        entries = []
+        for row in range(self._glossary_table.rowCount()):
+            src_item = self._glossary_table.item(row, 0)
+            tgt_item = self._glossary_table.item(row, 1)
+            src = src_item.text().strip() if src_item else ""
+            tgt = tgt_item.text().strip() if tgt_item else ""
+            if src or tgt:
+                entries.append({"source": src, "target": tgt})
+        return entries
+
+    def _on_glossary_changed(self):
+        self._current_settings["glossary"] = self._collect_glossary()
+        self._auto_save()
+
     # ── Shared logic ──
 
     def _on_silence_mode_changed(self, index):
@@ -1486,6 +1557,8 @@ class ControlPanel(QWidget):
             self._current_settings["auto_save_transcript"] = (
                 self._auto_save_transcript_cb.isChecked()
             )
+        if hasattr(self, "_glossary_table"):
+            self._current_settings["glossary"] = self._collect_glossary()
         if hasattr(self, "_style_preset"):
             self._current_settings["style"] = self._collect_style()
         safe = {

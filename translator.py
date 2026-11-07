@@ -149,6 +149,7 @@ class Translator:
         timeout=10,
         overrides=None,
         extra_body=None,
+        glossary=None,
     ):
         self._client = make_openai_client(api_base, api_key, proxy, timeout=timeout)
         self._no_system_role = no_system_role
@@ -166,6 +167,9 @@ class Translator:
         self._timeout = timeout
         self._overrides = {k: v for k, v in (overrides or {}).items() if v is not None}
         self._extra_body = dict(extra_body) if extra_body else {}
+        self._glossary = list(glossary) if glossary else []
+        if self._glossary:
+            log.info(f"Translator: glossary with {len(self._glossary)} entries")
         if self._overrides:
             log.info(f"Translator overrides: {self._overrides}")
         if self._extra_body:
@@ -187,6 +191,9 @@ class Translator:
     def set_timeout(self, timeout: int):
         self._timeout = timeout
         self._client = self._client.copy(timeout=timeout)
+
+    def set_glossary(self, glossary: list):
+        self._glossary = list(glossary) if glossary else []
 
     def set_context_turns(self, n: int):
         self._context_turns = n
@@ -221,12 +228,25 @@ class Translator:
         t._timeout = self._timeout
         t._overrides = dict(self._overrides)
         t._extra_body = dict(self._extra_body)
+        t._glossary = list(self._glossary)
         t._system_prompt_template = self._system_prompt_template
         t._context_turns = 0
         t._history = []
         t._last_prompt_tokens = 0
         t._last_completion_tokens = 0
         return t
+
+    def _build_glossary_text(self) -> str:
+        """Format glossary entries as prompt instructions."""
+        if not self._glossary:
+            return ""
+        lines = ["\n术语表（请严格按以下对照翻译）："]
+        for i, entry in enumerate(self._glossary, 1):
+            src = entry.get("source", "").strip()
+            tgt = entry.get("target", "").strip()
+            if src and tgt:
+                lines.append(f"{i}. {src} → {tgt}")
+        return "\n".join(lines)
 
     def _build_system_prompt(self, source_lang):
         src = LANGUAGE_DISPLAY.get(source_lang, source_lang)
@@ -240,6 +260,9 @@ class Translator:
         except (KeyError, IndexError, ValueError) as e:
             log.warning(f"Bad prompt template, falling back to default: {e}")
             prompt = DEFAULT_PROMPT.format(source_lang=src, target_lang=tgt)
+        glossary_text = self._build_glossary_text()
+        if glossary_text:
+            prompt += glossary_text
         if self._json_response:
             prompt += '\nRespond in JSON format: {"t": "translated text"}'
         return prompt
