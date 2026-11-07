@@ -1,4 +1,3 @@
-import ctypes
 import os
 
 import psutil
@@ -22,9 +21,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-_GWL_EXSTYLE = -20
-_WS_EX_TRANSPARENT = 0x20
 
 DEFAULT_STYLE = {
     "preset": "default",
@@ -1063,35 +1059,23 @@ class SubtitleOverlay(QWidget):
 
     def _set_click_through(self, enabled: bool):
         self._click_through = enabled
-        if not enabled:
-            hwnd = int(self.winId())
-            style = ctypes.windll.user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
-            if style & _WS_EX_TRANSPARENT:
-                ctypes.windll.user32.SetWindowLongW(
-                    hwnd, _GWL_EXSTYLE, style & ~_WS_EX_TRANSPARENT
-                )
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, enabled
+        )
 
     def _check_click_through(self):
         if not self._click_through:
             return
         cursor = QCursor.pos()
         local = self.mapFromGlobal(cursor)
-        hwnd = int(self.winId())
-        style = ctypes.windll.user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
 
         scroll_top = self._scroll.mapTo(self, QPoint(0, 0)).y()
         in_header = 0 <= local.x() <= self.width() and 0 <= local.y() < scroll_top
 
-        if in_header:
-            if style & _WS_EX_TRANSPARENT:
-                ctypes.windll.user32.SetWindowLongW(
-                    hwnd, _GWL_EXSTYLE, style & ~_WS_EX_TRANSPARENT
-                )
-        else:
-            if not (style & _WS_EX_TRANSPARENT):
-                ctypes.windll.user32.SetWindowLongW(
-                    hwnd, _GWL_EXSTYLE, style | _WS_EX_TRANSPARENT
-                )
+        # Allow interaction in header area, pass clicks elsewhere
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, not in_header
+        )
 
     def _on_mode_changed(self, mode: str):
         compact = mode == "compact"

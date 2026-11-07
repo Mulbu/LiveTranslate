@@ -8,7 +8,6 @@ Usage:
   - OBS: Window Capture → select "LiveTranslate Subtitle" → check "Allow Transparency"
 """
 
-import ctypes
 import time
 from pathlib import Path
 
@@ -29,13 +28,6 @@ from PyQt6.QtGui import (
     QPixmap,
 )
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout
-
-# Win32 extended window style bits for OS-level mouse click-through (same
-# mechanism as the main overlay): a window with WS_EX_TRANSPARENT passes clicks
-# to whatever is behind it, so it never blocks the video player / browser.
-_GWL_EXSTYLE = -20
-_WS_EX_TRANSPARENT = 0x20
-
 
 def _resolve_image_path(path: str) -> str:
     """Resolve image path (relative to project dir or absolute)."""
@@ -766,20 +758,10 @@ class SubtitleWindow(QWidget):
         self._apply_click_through()
 
     def _apply_click_through(self):
-        try:
-            hwnd = int(self.winId())
-            style = ctypes.windll.user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
-            if self._click_through:
-                if not (style & _WS_EX_TRANSPARENT):
-                    ctypes.windll.user32.SetWindowLongW(
-                        hwnd, _GWL_EXSTYLE, style | _WS_EX_TRANSPARENT
-                    )
-            elif style & _WS_EX_TRANSPARENT:
-                ctypes.windll.user32.SetWindowLongW(
-                    hwnd, _GWL_EXSTYLE, style & ~_WS_EX_TRANSPARENT
-                )
-        except Exception:
-            pass
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            self._click_through,
+        )
 
     def showEvent(self, event):
         super().showEvent(event)

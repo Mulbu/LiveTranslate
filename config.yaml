@@ -10,15 +10,15 @@ audio:
 
 asr:
   # ASR engine: whisper, funasr, anime-whisper
-  asr_engine: "funasr"
+  asr_engine: "whisper"
   # Model size: tiny, base, small, medium, large-v3
-  model_size: "medium"
+  model_size: "small"
   # FunASR model: sensevoice-small, funasr-nano-2512, funasr-mlt-nano-2512
   funasr_model: "sensevoice-small"
   # Device: cuda or cpu
-  device: "cuda"
+  device: "cpu"
   # Compute type: float16, int8_float16, int8
-  compute_type: "float16"
+  compute_type: "int8"
   # Language: auto, en, ja, zh, ko, etc.
   language: "auto"
   # Minimum speech duration (seconds) before sending to ASR
@@ -34,21 +34,21 @@ asr:
 
 translation:
   # OpenAI-compatible API settings
-  api_base: "http://127.0.0.1:1234/v1"
-  api_key: "sk-lm-tHzDfNGm:dgxlip7eebn3HIMxivqN"
-  model: "hunyuan-mt-chimera-7b"
+  api_base: "https://api.deepseek.com/v1"
+  api_key: "sk-YOUR_API_KEY_HERE"
+  model: "deepseek-chat"
   # Target language for translation
   target_language: "zh"
   # Source language hint (auto = detect from ASR)
   source_language: "auto"
   # Context window size (number of recent translations to include)
-  context_window: 10
+  context_window: 1
   # Max tokens for translation response
   max_tokens: 256
   # Temperature
   temperature: 0.3
   # Enable streaming output
-  streaming: true
+  streaming: false
   # System prompt template ({source_lang}, {target_lang}, {context} will be replaced)
   system_prompt: |
     你是一个专业的影视字幕翻译专家。请将以下{source_lang}对话翻译为{target_lang}。
@@ -63,7 +63,7 @@ translation:
 
 subtitle:
   # Font family
-  font_family: "Microsoft YaHei"
+  font_family: "Noto Sans CJK SC"
   # Font size
   font_size: 28
   # Font color (hex)

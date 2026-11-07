@@ -37,7 +37,6 @@ apply_cache_env()
 
 import os
 
-# torch must be imported before PyQt6 to avoid DLL conflicts on Windows
 import torch  # noqa: F401
 
 from audio_capture import AudioCapture
@@ -1730,10 +1729,11 @@ def main():
     )
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
-    # Pin a guaranteed TrueType UI font to avoid DirectWrite failures on the
-    # legacy "MS Sans Serif" bitmap font Windows may resolve as the default
-    if "Segoe UI" in QFontDatabase.families():
-        app.setFont(QFont("Segoe UI", 9))
+    # Set default UI font
+    for font_name in ["Noto Sans CJK SC", "Noto Sans", "Cantarell", "Ubuntu", "DejaVu Sans"]:
+        if font_name in QFontDatabase.families():
+            app.setFont(QFont(font_name, 9))
+            break
     _app_icon = create_app_icon()
     app.setWindowIcon(_app_icon)
 
