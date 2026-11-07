@@ -46,10 +46,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: Check venv
-if not exist ".venv\Scripts\pip.exe" (
+:: Locate interpreter: prefer the conda env recorded by install.ps1, else .venv
+set "PY="
+if exist ".conda-python" set /p PY=<.conda-python
+if defined PY if not exist "%PY%" set "PY="
+if not defined PY if exist ".venv\Scripts\python.exe" set "PY=%~dp0.venv\Scripts\python.exe"
+
+if not defined PY (
     echo.
-    echo Virtual environment not found, running install.bat...
+    echo Environment not found, running install.bat...
     call install.bat
     exit /b %errorlevel%
 )
@@ -62,29 +67,29 @@ set "PIP_CACHE_DIR=%~dp0.pip-cache"
 set "TMP=%~dp0.tmp"
 set "TEMP=%~dp0.tmp"
 if not exist "%~dp0.tmp" mkdir "%~dp0.tmp"
-del /q ".venv\.livetranslate-ready" >nul 2>&1
-.venv\Scripts\pip.exe install -r requirements.txt --quiet
+if exist ".livetranslate-ready" del /q ".livetranslate-ready" >nul 2>&1
+"%PY%" -m pip install -r requirements.txt --quiet
 if errorlevel 1 (
     echo [ERROR] Failed to update dependencies.
     pause
     exit /b 1
 )
 
-.venv\Scripts\pip.exe install "yasbd-lib>=0.15,<1.0" --quiet
+"%PY%" -m pip install "yasbd-lib>=0.15,<1.0" --quiet
 if errorlevel 1 (
     echo [ERROR] Failed to install yasbd-lib.
     pause
     exit /b 1
 )
 
-.venv\Scripts\python.exe -m pip check
+"%PY%" -m pip check
 if errorlevel 1 (
     echo [ERROR] Installed dependencies are inconsistent.
     pause
     exit /b 1
 )
 
-> ".venv\.livetranslate-ready" echo %DATE% %TIME%
+> ".livetranslate-ready" echo %DATE% %TIME%
 
 rd /s /q "%~dp0.pip-cache" >nul 2>&1
 rd /s /q "%~dp0.tmp" >nul 2>&1

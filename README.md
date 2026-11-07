@@ -58,10 +58,10 @@ cd LiveTranslate
 ```
 
 Double-click **`install.bat`** — the installer will:
-1. Detect Python 3.10–3.12 (auto-install via winget if missing)
-2. Create a virtual environment
+1. Detect conda (Miniconda/Anaconda); if absent, fall back to Python 3.10–3.12 + a project `.venv`
+2. Create/reuse a conda environment **`livetranslate`** (Python 3.12)
 3. Auto-detect NVIDIA GPU and let you choose CUDA / CPU PyTorch
-4. Install all dependencies
+4. Install all dependencies into that environment
 
 Then double-click **`start.bat`** to launch.
 
@@ -71,8 +71,9 @@ To update, double-click **`update.bat`** — it will pull the latest code and up
 <summary>Manual install</summary>
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
+# (Recommended) conda — install.bat creates this env for you
+conda create -y -n livetranslate python=3.12
+conda activate livetranslate
 
 # PyTorch (choose one)
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126  # CUDA
@@ -83,7 +84,7 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu   
 pip install -r requirements.txt
 
 # Launch
-.venv\Scripts\python.exe main.py
+python main.py
 ```
 
 </details>

@@ -27,8 +27,16 @@ sentencepiece>=0.2.0
 tiktoken>=0.7.0
 transformers>=4.40.0
 
-# VAD (bundles the Silero v5 model in the wheel — no GitHub/torch.hub download)
-silero-vad>=5.0
+# Post-processing modeled on kotoba-whisper-v2.2 (see POSTPROCESS_SETUP.md).
+# Punctuation restoration via the punctuators ONNX model (CPU-friendly, no torch).
+punctuators==0.0.5
+onnxruntime>=1.16.0
+# Speaker identification additionally needs pyannote.audio, which pulls torch.
+# Install it AFTER the CUDA torch build above, otherwise pip may replace torch
+# with a CPU wheel:   pip install pyannote.audio
+
+# VAD (bundles the Silero v6 model in the wheel — no GitHub/torch.hub download)
+silero-vad>=6.2.3
 
 # Model hubs
 modelscope>=1.20.0

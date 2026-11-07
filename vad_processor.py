@@ -28,8 +28,10 @@ class VADProcessor:
         self._chunk_duration = chunk_duration
         self.mode = "silero"  # "silero", "energy", "disabled"
 
-        # Silero v5 ships its model inside the `silero-vad` PyPI package, so load
-        # it from there (zero network). Only fall back to the torch.hub cache
+        # Silero VAD v6 (latest) ships its model inside the `silero-vad` PyPI
+        # package, so load it from there (zero network). The v6 JIT model keeps
+        # the same streaming API as before: model(chunk, sample_rate) with a
+        # 512-sample (16 kHz) window. Only fall back to the torch.hub cache
         # (pinned branch -> offline when already cached) if the package is
         # missing, since torch.hub otherwise probes/downloads from GitHub.
         try:

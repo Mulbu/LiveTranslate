@@ -326,3 +326,10 @@ subwin_anim_slide_left: "从左滑入"
 subwin_anim_slide_right: "从右滑入"
 subwin_anim_slide_up: "从下滑入"
 subwin_anim_slide_down: "从上滑入"
+
+# 后处理（kotoba-whisper-v2.2 同款）
+label_add_punctuation: "标点符号还原"
+tooltip_add_punctuation: "用 punctuators 模型补全标点/大小写（与 kotoba-whisper-v2.2 相同）。需要 onnxruntime 与 punctuators 包。"
+label_diarization: "说话人识别"
+tooltip_diarization: "用 pyannote 声纹嵌入 + 在线聚类为每条字幕标注说话人（SPEAKER_00…，与 kotoba-whisper-v2.2 同系）。需要 pyannote.audio 及 gated 模型对应的 Hugging Face token。"
+speaker_label: "说话人"

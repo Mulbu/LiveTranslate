@@ -4,7 +4,8 @@
 $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectDir
-$ReadyMarker = Join-Path $ProjectDir ".venv\.livetranslate-ready"
+$ReadyMarker = Join-Path $ProjectDir ".livetranslate-ready"
+$CondaEnvName = "livetranslate"
 
 function Write-Step { param($msg) Write-Host "`n[$((Get-Date).ToString('HH:mm:ss'))] $msg" -ForegroundColor Cyan }
 function Write-Ok   { param($msg) Write-Host "  OK: $msg" -ForegroundColor Green }
@@ -60,7 +61,81 @@ $env:TMP = Join-Path $ProjectDir ".tmp"
 $env:TEMP = $env:TMP
 New-Item -ItemType Directory -Force -Path $env:TMP | Out-Null
 
-# ── Step 1: Find Python ──
+# ── Step 1: Choose environment backend (conda preferred) ──
+Write-Step "Detecting conda..."
+
+$UseConda = $false
+
+function Get-CondaBase {
+    try {
+        $b = & conda info --base 2>$null
+        if ($LASTEXITCODE -eq 0 -and $b) { return ($b | Select-Object -Last 1).Trim() }
+    } catch {}
+    foreach ($p in @(
+        (Join-Path $env:USERPROFILE "miniconda3\condabin\conda.bat"),
+        (Join-Path $env:USERPROFILE "anaconda3\condabin\conda.bat"),
+        "D:\miniconda3\condabin\conda.bat",
+        "D:\anaconda3\condabin\conda.bat",
+        "C:\ProgramData\miniconda3\condabin\conda.bat",
+        "C:\ProgramData\anaconda3\condabin\conda.bat"
+    )) {
+        if (Test-Path $p) {
+            try {
+                $b = & $p info --base 2>$null
+                if ($LASTEXITCODE -eq 0 -and $b) { return ($b | Select-Object -Last 1).Trim() }
+            } catch {}
+        }
+    }
+    return $null
+}
+
+$CondaBase = Get-CondaBase
+if ($CondaBase) {
+    $UseConda = $true
+    Write-Ok "Conda detected: $CondaBase"
+} else {
+    Write-Warn "Conda not found - falling back to a project .venv"
+}
+
+if ($UseConda) {
+    Write-Step "Preparing conda environment '$CondaEnvName' (Python 3.12)..."
+    $EnvDir = Join-Path $CondaBase "envs\$CondaEnvName"
+    $EnvPython = Join-Path $EnvDir "python.exe"
+    $needCreate = $true
+    if (Test-Path $EnvPython) {
+        $ver = & $EnvPython --version 2>&1
+        if ("$ver" -match "Python 3\.1[0-2]\.") {
+            Write-Ok "Reusing existing conda env '$CondaEnvName' ($ver)"
+            $needCreate = $false
+        } else {
+            Write-Warn "Existing env has $ver (need Python 3.10-3.12), recreating..."
+            & conda env remove -y -n $CondaEnvName | Out-Null
+        }
+    }
+    if ($needCreate) {
+        & conda create -y -n $CondaEnvName python=3.12
+        if ($LASTEXITCODE -ne 0) {
+            Write-Err "Failed to create conda env '$CondaEnvName'"
+            Read-Host "Press Enter to exit"
+            exit 1
+        }
+    }
+    if (-not (Test-Path $EnvPython)) {
+        Write-Err "conda env python not found: $EnvPython"
+        Read-Host "Press Enter to exit"
+        exit 1
+    }
+    $Python = $EnvPython
+    $Pip = Join-Path $EnvDir "Scripts\pip.exe"
+    if (-not (Test-Path $Pip)) { & $Python -m ensurepip --upgrade | Out-Null }
+    Set-Content -LiteralPath (Join-Path $ProjectDir ".conda-env") -Value $CondaEnvName -Encoding ascii
+    Set-Content -LiteralPath (Join-Path $ProjectDir ".conda-python") -Value $Python -Encoding ascii
+    Write-Ok "conda env ready: $EnvDir"
+}
+
+if (-not $UseConda) {
+
+# ── Step 1b: Find Python (venv fallback) ──
 Write-Step "Detecting Python..."
 
 function Find-Python {
@@ -192,6 +267,12 @@ if (Test-Path ".venv") {
 $Pip = ".venv\Scripts\pip.exe"
 $Python = ".venv\Scripts\python.exe"
 
+# Falling back to .venv: drop any stale conda pointers so start.bat uses the venv.
+Remove-Item -LiteralPath (Join-Path $ProjectDir ".conda-env") -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $ProjectDir ".conda-python") -Force -ErrorAction SilentlyContinue
+
+}  # end venv fallback
+
 # Upgrade pip first
 Write-Step "Upgrading pip..."
 & $Python -m pip install --upgrade pip --quiet
@@ -311,7 +392,11 @@ Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "  To start LiveTranslate:" -ForegroundColor White
 Write-Host "    Double-click start.bat" -ForegroundColor Yellow
-Write-Host "    or run: .venv\Scripts\python.exe main.py" -ForegroundColor Yellow
+if ($UseConda) {
+    Write-Host "    environment: conda env '$CondaEnvName'  (conda activate $CondaEnvName)" -ForegroundColor Yellow
+} else {
+    Write-Host "    environment: .venv" -ForegroundColor Yellow
+}
 Write-Host ""
 Write-Host "  First launch will download ASR models (~1GB)." -ForegroundColor White
 Write-Host ""

@@ -58,10 +58,10 @@ cd LiveTranslate
 ```
 
 双击 **`install.bat`** 一键安装——脚本会自动：
-1. 检测 Python 3.10–3.12（未安装则通过 winget 自动安装）
-2. 创建虚拟环境
+1. 检测 conda（Miniconda/Anaconda）；若没有则回退到 Python 3.10–3.12 + 项目内 `.venv`
+2. 创建/复用 conda 环境 **`livetranslate`**（Python 3.12）
 3. 检测 NVIDIA 显卡，选择 CUDA / CPU 版 PyTorch
-4. 安装全部依赖
+4. 将全部依赖安装进该 conda 环境
 
 安装完成后双击 **`start.bat`** 启动。
 
@@ -71,8 +71,9 @@ cd LiveTranslate
 <summary>手动安装</summary>
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
+# （推荐）conda —— install.bat 会自动创建该环境
+conda create -y -n livetranslate python=3.12
+conda activate livetranslate
 
 # PyTorch（三选一）
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126  # CUDA
@@ -83,7 +84,7 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu   
 pip install -r requirements.txt
 
 # 启动
-.venv\Scripts\python.exe main.py
+python main.py
 ```
 
 </details>

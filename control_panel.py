@@ -163,6 +163,12 @@ class ControlPanel(QWidget):
             "whisper_pad_seconds",
             config["asr"].get("whisper_pad_seconds", 0.5),
         )
+        self._current_settings.setdefault(
+            "add_punctuation", config["asr"].get("add_punctuation", False)
+        )
+        self._current_settings.setdefault(
+            "diarization", config["asr"].get("diarization", False)
+        )
 
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
@@ -368,6 +374,20 @@ class ControlPanel(QWidget):
         asr_layout.addWidget(QLabel(t("label_hub")), 8, 0)
         asr_layout.addWidget(self._hub_combo, 8, 1)
         self._hub_combo.currentIndexChanged.connect(self._auto_save)
+
+        from PyQt6.QtWidgets import QCheckBox
+
+        self._punctuation_cb = QCheckBox(t("label_add_punctuation"))
+        self._punctuation_cb.setToolTip(t("tooltip_add_punctuation"))
+        self._punctuation_cb.setChecked(bool(s.get("add_punctuation", False)))
+        self._punctuation_cb.toggled.connect(self._auto_save)
+        asr_layout.addWidget(self._punctuation_cb, 10, 0, 1, 2)
+
+        self._diarization_cb = QCheckBox(t("label_diarization"))
+        self._diarization_cb.setToolTip(t("tooltip_diarization"))
+        self._diarization_cb.setChecked(bool(s.get("diarization", False)))
+        self._diarization_cb.toggled.connect(self._auto_save)
+        asr_layout.addWidget(self._diarization_cb, 11, 0, 1, 2)
 
         self._ui_lang_combo = QComboBox()
         self._ui_lang_combo.addItems(["English", "中文"])
@@ -1477,6 +1497,10 @@ class ControlPanel(QWidget):
         self._current_settings["hub"] = (
             "ms" if self._hub_combo.currentIndex() == 0 else "hf"
         )
+        if hasattr(self, "_punctuation_cb"):
+            self._current_settings["add_punctuation"] = self._punctuation_cb.isChecked()
+        if hasattr(self, "_diarization_cb"):
+            self._current_settings["diarization"] = self._diarization_cb.isChecked()
         self._current_settings["sensevoice_pad_seconds"] = round(
             self._sensevoice_pad_seconds.value(), 2
         )

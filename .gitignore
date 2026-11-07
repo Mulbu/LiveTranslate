@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 *.pyo
 .venv/
+.conda-env
+.conda-python
+.livetranslate-ready
 .pip-cache/
 .uv-cache/
 .tmp/

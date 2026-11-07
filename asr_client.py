@@ -120,6 +120,14 @@ class ASRClient:
             timeout=min(10.0, self.request_timeout),
         )
 
+    def set_postprocess(self, config: dict):
+        """Rebuild punctuation/speaker post-processing without reloading the model."""
+        self._request(
+            "set_postprocess",
+            {"config": config},
+            timeout=min(30.0, self.request_timeout),
+        )
+
     def shutdown(self):
         with self._lock:
             if self._process is None:

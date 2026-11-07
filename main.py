@@ -155,6 +155,23 @@ def load_config():
         return yaml.safe_load(f)
 
 
+_PP_KEYS = (
+    "add_punctuation",
+    "punctuation_model",
+    "diarization",
+    "diarization_model",
+    "diarization_threshold",
+    "diarization_max_speakers",
+    "diarization_min_segment",
+)
+
+
+def _pp_signature(cfg):
+    if not cfg:
+        return None
+    return tuple(cfg.get(k) for k in _PP_KEYS)
+
+
 class LiveTranslateApp:
     def __init__(self, config):
         self._config = config
@@ -536,7 +553,45 @@ class LiveTranslateApp:
             signature_model = remote_asr_url
         else:
             signature_model = engine_type
-        signature = (engine_type, signature_model, device, hub, compute)
+
+        add_punctuation = bool(
+            settings.get(
+                "add_punctuation", self._config["asr"].get("add_punctuation", False)
+            )
+            if self._panel
+            else self._config["asr"].get("add_punctuation", False)
+        )
+        diarization = bool(
+            settings.get("diarization", self._config["asr"].get("diarization", False))
+            if self._panel
+            else self._config["asr"].get("diarization", False)
+        )
+        post_cfg = {
+            "add_punctuation": add_punctuation,
+            "punctuation_model": self._config["asr"].get("punctuation_model"),
+            "diarization": diarization,
+            "diarization_model": self._config["asr"].get("diarization_model"),
+            "diarization_threshold": self._config["asr"].get(
+                "diarization_threshold", 0.72
+            ),
+            "diarization_max_speakers": self._config["asr"].get(
+                "diarization_max_speakers", 8
+            ),
+            "diarization_min_segment": self._config["asr"].get(
+                "diarization_min_segment", 0.4
+            ),
+        }
+        postprocess_sig = tuple(post_cfg[k] for k in _PP_KEYS)
+        # Model identity only. Post-processing toggles (punctuation / speaker)
+        # are applied live via worker.set_postprocess() so flipping them does not
+        # pay the ~5s model reload + first-call cold start.
+        signature = (
+            engine_type,
+            signature_model,
+            device,
+            hub,
+            compute,
+        )
 
         with self._asr_lock:
             current_asr = self._asr
@@ -545,10 +600,26 @@ class LiveTranslateApp:
                 and current_asr is not None
                 and current_asr.status == "ready"
             )
-            if current_ready and self._asr_signature == signature:
-                return
+            same_model = current_ready and self._asr_signature == signature
+            current_pp = _pp_signature(self._asr_config)
             if not current_ready:
                 self._asr_ready = False
+
+        if same_model and current_pp == postprocess_sig:
+            return
+        if same_model:
+            # Only punctuation / diarization changed: update in place.
+            try:
+                current_asr.set_postprocess(post_cfg)
+                with self._asr_lock:
+                    if self._asr_config is not None:
+                        self._asr_config.update(post_cfg)
+                log.info("Post-processor updated live (no ASR model reload)")
+                return
+            except Exception as exc:
+                log.warning(
+                    f"Live post-processor update failed, reloading model: {exc}"
+                )
 
         log.info(f"Switching ASR worker: {self._asr_type} -> {engine_type}")
         # Reset interim state for the engine boundary. The active worker is
@@ -603,6 +674,19 @@ class LiveTranslateApp:
             "download_root": str((MODELS_DIR / "huggingface" / "hub").resolve()),
             "display_name": display_name,
             "remote_asr_url": remote_asr_url,
+            "add_punctuation": add_punctuation,
+            "punctuation_model": self._config["asr"].get("punctuation_model"),
+            "diarization": diarization,
+            "diarization_model": self._config["asr"].get("diarization_model"),
+            "diarization_threshold": self._config["asr"].get(
+                "diarization_threshold", 0.72
+            ),
+            "diarization_max_speakers": self._config["asr"].get(
+                "diarization_max_speakers", 8
+            ),
+            "diarization_min_segment": self._config["asr"].get(
+                "diarization_min_segment", 0.4
+            ),
         }
         target_state = {
             "type": engine_type,
@@ -852,6 +936,9 @@ class LiveTranslateApp:
             funasr_key = self._funasr_model_key
         try:
             self._apply_pending_asr_settings(client, asr_type, funasr_key)
+            # Post-processing (punctuation / speaker ID) is expensive; only run it
+            # for committed results, never on repeated streaming partials.
+            kwargs.setdefault("postprocess", kind in ("segment", "interim_final"))
             result = client.transcribe(audio, **kwargs)
         except (ASRWorkerExited, ASRWorkerTimeout) as exc:
             asr_ms = (time.perf_counter() - asr_start) * 1000
@@ -1077,8 +1164,14 @@ class LiveTranslateApp:
                     self._total_completion_tokens * self._output_price) / 1_000_000
         return 0.0
 
-    def _translate_async(self, msg_id, text, source_lang, extra_langs=None):
-        """Translate text and update UI with streaming display."""
+    def _translate_async(self, msg_id, text, source_lang, extra_langs=None, display_text=None):
+        """Translate text and update UI with streaming display.
+
+        ``text`` is the clean source used for translation; ``display_text`` (when
+        given) is what the subtitle window shows as the original line, including
+        an optional speaker tag that must not be sent to the translator.
+        """
+        subwin_original = display_text or text
         try:
             tl_start = time.perf_counter()
             translated = None
@@ -1110,7 +1203,7 @@ class LiveTranslateApp:
                 tl_dict = {self._target_language: translated}
                 if extra_langs:
                     self._translate_extra_langs(text, source_lang, extra_langs, tl_dict)
-                self._subwin.update_text(text, tl_dict)
+                self._subwin.update_text(subwin_original, tl_dict)
         except RepetitionError:
             log.warning("Repetition loop detected, model may not support structured output well")
             self._transcript.finalize_no_translation(msg_id)
@@ -1156,12 +1249,12 @@ class LiveTranslateApp:
                 else:
                     log.error(f"Extra translate error: {e}", exc_info=True)
 
-    def _translate_subwin_only(self, text, source_lang, extra_langs):
+    def _translate_subwin_only(self, text, source_lang, extra_langs, display_text=None):
         """Translate only for subtitle window when primary target == source language."""
         tl_dict = {self._target_language: text}  # same language, use original
         self._translate_extra_langs(text, source_lang, extra_langs, tl_dict)
         if self._subwin and self._subwin.isVisible():
-            self._subwin.update_text(text, tl_dict)
+            self._subwin.update_text(display_text or text, tl_dict)
 
     def start(self):
         if self._running:
@@ -1300,11 +1393,14 @@ class LiveTranslateApp:
         timestamp = datetime.now().strftime("%H:%M:%S")
         log.info(f"ASR [{source_lang}] ({asr_ms:.0f}ms): {original_text}")
 
+        speaker = result.get("speaker")
+        display_text = self._with_speaker(original_text, speaker)
+
         if self._overlay:
             self._overlay.add_message(
-                msg_id, timestamp, original_text, source_lang, asr_ms
+                msg_id, timestamp, display_text, source_lang, asr_ms
             )
-        self._transcript.write_original(msg_id, timestamp, original_text)
+        self._transcript.write_original(msg_id, timestamp, display_text)
 
         # Store for subtitle window (translation will be added later)
         self._last_original = original_text
@@ -1336,17 +1432,17 @@ class LiveTranslateApp:
                 if extra_langs:
                     try:
                         self._tl_executor.submit(
-                            self._translate_subwin_only, original_text, source_lang, extra_langs
+                            self._translate_subwin_only, original_text, source_lang, extra_langs, display_text
                         )
                     except RuntimeError:
                         pass
                 else:
-                    self._subwin.update_text(original_text, {target_lang: original_text})
+                    self._subwin.update_text(display_text, {target_lang: original_text})
         else:
             try:
                 self._tl_executor.submit(
                     self._translate_async, msg_id, original_text, source_lang,
-                    extra_langs or None,
+                    extra_langs or None, display_text,
                 )
             except RuntimeError:
                 log.warning("Translation executor shut down, skipping")
@@ -1526,7 +1622,20 @@ class LiveTranslateApp:
         log.info(f"Interim ASR: committed {len(complete)} sentence(s), trimmed {trim_samples / 16000:.2f}s")
         return True
 
-    def _process_segment_text(self, text: str, source_lang: str, asr_ms: float = 0):
+    @staticmethod
+    def _with_speaker(text: str, speaker: str | None) -> str:
+        """Prefix a speaker tag like ``[说话人1] `` onto display text."""
+        if not speaker:
+            return text
+        label = str(speaker)
+        try:
+            num = int(label.rsplit("_", 1)[-1]) + 1
+        except (ValueError, IndexError):
+            num = None
+        prefix = f"{t('speaker_label')}{num}" if num is not None else label
+        return f"[{prefix}] {text}"
+
+    def _process_segment_text(self, text: str, source_lang: str, asr_ms: float = 0, speaker: str | None = None):
         """Output a text result (from interim or final) — similar to _process_segment but skips ASR."""
         original_text = text.strip()
         if not original_text or not any(c.isalnum() for c in original_text):
@@ -1543,9 +1652,11 @@ class LiveTranslateApp:
         timestamp = datetime.now().strftime("%H:%M:%S")
         log.info(f"ASR [{source_lang}] ({asr_ms:.0f}ms, interim): {original_text}")
 
+        display_text = self._with_speaker(original_text, speaker)
+
         if self._overlay:
-            self._overlay.add_message(msg_id, timestamp, original_text, source_lang, asr_ms)
-        self._transcript.write_original(msg_id, timestamp, original_text)
+            self._overlay.add_message(msg_id, timestamp, display_text, source_lang, asr_ms)
+        self._transcript.write_original(msg_id, timestamp, display_text)
 
         self._last_original = original_text
         self._last_msg_id = msg_id
@@ -1565,14 +1676,14 @@ class LiveTranslateApp:
             if self._subwin and self._subwin.isVisible():
                 if extra_langs:
                     try:
-                        self._tl_executor.submit(self._translate_subwin_only, original_text, source_lang, extra_langs)
+                        self._tl_executor.submit(self._translate_subwin_only, original_text, source_lang, extra_langs, display_text)
                     except RuntimeError:
                         pass
                 else:
-                    self._subwin.update_text(original_text, {target_lang: original_text})
+                    self._subwin.update_text(display_text, {target_lang: original_text})
         else:
             try:
-                self._tl_executor.submit(self._translate_async, msg_id, original_text, source_lang, extra_langs or None)
+                self._tl_executor.submit(self._translate_async, msg_id, original_text, source_lang, extra_langs or None, display_text)
             except RuntimeError:
                 log.warning("Translation executor shut down, skipping")
     def _process_interim_final(self, speech_segment):
@@ -1618,7 +1729,7 @@ class LiveTranslateApp:
             log.debug(f"Noise filter: {seg_len:.1f}s segment produced only '{original_text}', skipping")
             return
 
-        self._process_segment_text(original_text, result["language"], asr_ms)
+        self._process_segment_text(original_text, result["language"], asr_ms, result.get("speaker"))
 
     def _capture_loop(self):
         silence_chunk = np.zeros(

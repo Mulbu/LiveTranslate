@@ -31,6 +31,16 @@ asr:
   sensevoice_pad_seconds: 0.5
   # faster-whisper input padding bucket in seconds (0 = disabled)
   whisper_pad_seconds: 0.5
+  # Post-processing modeled on kotoba-whisper-v2.2 (see POSTPROCESS_SETUP.md).
+  # Punctuation uses the `punctuators` ONNX model; speaker ID uses a pyannote
+  # embedding model with online clustering. Both need extra deps + HF models.
+  add_punctuation: false
+  punctuation_model: "1-800-BAD-CODE/xlm-roberta_punctuation_fullstop_truecase"
+  diarization: false
+  diarization_model: "pyannote/embedding"
+  diarization_threshold: 0.72
+  diarization_max_speakers: 8
+  diarization_min_segment: 0.4
 
 translation:
   # OpenAI-compatible API settings

@@ -327,3 +327,10 @@ subwin_anim_slide_left: "Slide Left"
 subwin_anim_slide_right: "Slide Right"
 subwin_anim_slide_up: "Slide Up"
 subwin_anim_slide_down: "Slide Down"
+
+# Post-processing (kotoba-whisper-v2.2 style)
+label_add_punctuation: "Punctuation restoration"
+tooltip_add_punctuation: "Restore punctuation/casing via the punctuators model (same as kotoba-whisper-v2.2). Needs onnxruntime + the punctuators package."
+label_diarization: "Speaker identification"
+tooltip_diarization: "Tag each subtitle with a speaker (SPEAKER_00, ...) via pyannote embeddings + online clustering (same family as kotoba-whisper-v2.2). Needs pyannote.audio and a Hugging Face token for the gated embedding model."
+speaker_label: "Speaker "
