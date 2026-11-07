@@ -1,234 +1,108 @@
+"""
+LiveTranslate - Linux audio capture via PulseAudio (pulsectl + parec).
+Replaces the original WASAPI-based audio_capture.py for Linux compatibility.
+
+Captures system audio via PulseAudio monitor source (loopback)
+and optional microphone input.
+"""
+
 import logging
 import threading
 import queue
 import time
+import subprocess
 import numpy as np
-import pyaudiowpatch as pyaudio
+import pulsectl
 
 log = logging.getLogger("LiveTranslate.Audio")
 
 DEVICE_CHECK_INTERVAL = 2.0  # seconds
 
+# ── PulseAudio device helpers ──────────────────────────────────────────────
+
+
+def _get_pulse():
+    """Create a temporary PulseAudio connection for enumeration."""
+    return pulsectl.Pulse("livetranslate-enum")
+
+
+def _monitor_name_for_sink(pulse, sink_name):
+    """Return the monitor source name for a given sink name."""
+    for src in pulse.source_list():
+        if src.monitor_of_sink_name == sink_name:
+            return src.name
+    return None
+
 
 def list_output_devices():
-    """Return list of WASAPI output device names."""
-    pa = pyaudio.PyAudio()
-    devices = []
-    wasapi_idx = None
-    for i in range(pa.get_host_api_count()):
-        info = pa.get_host_api_info_by_index(i)
-        if "WASAPI" in info["name"]:
-            wasapi_idx = info["index"]
-            break
-    if wasapi_idx is not None:
-        for i in range(pa.get_device_count()):
-            dev = pa.get_device_info_by_index(i)
-            if (
-                dev["hostApi"] == wasapi_idx
-                and dev["maxOutputChannels"] > 0
-                and not dev.get("isLoopbackDevice", False)
-            ):
-                devices.append(dev["name"])
-    pa.terminate()
-    return devices
+    """Return list of PulseAudio sink (output) descriptions (for loopback capture)."""
+    try:
+        pulse = _get_pulse()
+        devices = []
+        for sink in pulse.sink_list():
+            devices.append(sink.description)
+        pulse.close()
+        return devices
+    except Exception as e:
+        log.warning(f"Failed to list output devices: {e}")
+        return []
 
 
 def list_input_devices():
-    """Return list of WASAPI input (microphone) device names."""
-    pa = pyaudio.PyAudio()
-    devices = []
-    wasapi_idx = None
-    for i in range(pa.get_host_api_count()):
-        info = pa.get_host_api_info_by_index(i)
-        if "WASAPI" in info["name"]:
-            wasapi_idx = info["index"]
-            break
-    if wasapi_idx is not None:
-        for i in range(pa.get_device_count()):
-            dev = pa.get_device_info_by_index(i)
-            if (
-                dev["hostApi"] == wasapi_idx
-                and dev["maxInputChannels"] > 0
-                and not dev.get("isLoopbackDevice", False)
-            ):
-                devices.append(dev["name"])
-    pa.terminate()
-    return devices
+    """Return list of PulseAudio source (input/mic) descriptions."""
+    try:
+        pulse = _get_pulse()
+        devices = []
+        for src in pulse.source_list():
+            # Exclude monitor sources (these are loopback captures of sinks)
+            if not src.monitor_of_sink_name:
+                devices.append(src.description)
+        pulse.close()
+        return devices
+    except Exception as e:
+        log.warning(f"Failed to list input devices: {e}")
+        return []
+
+
+def _description_to_name(pulse, desc, kind="sink"):
+    """Convert a human-readable description back to a PulseAudio name."""
+    if kind == "sink":
+        for s in pulse.sink_list():
+            if s.description == desc:
+                return s.name
+    else:
+        for s in pulse.source_list():
+            if s.description == desc:
+                return s.name
+    return None
+
+
+# ── AudioCapture class ─────────────────────────────────────────────────────
 
 
 class AudioCapture:
-    """Capture system audio via WASAPI loopback using pyaudiowpatch."""
+    """Capture system audio via PulseAudio monitor + optional mic via parec."""
 
     def __init__(self, device=None, sample_rate=16000, chunk_duration=0.5):
         self.sample_rate = sample_rate
         self.chunk_duration = chunk_duration
         self.audio_queue = queue.Queue(maxsize=100)
-        self._stream = None
-        self._running = False
-        self._device_name = device
-        self._pa = pyaudio.PyAudio()
-        self._read_thread = None
-        self._native_channels = 2
-        self._native_rate = 44100
+        self._device_name = device  # None = default sink, "__disabled__" = off
         self._current_device_name = None
         self._loopback_disabled = False
+        self._running = False
+        self._read_thread = None
+        self._loopback_proc = None  # subprocess for parec (loopback)
+        self._mic_proc = None  # subprocess for parec (mic)
+        # Microphone
+        self._mic_device_name = None
+        self._mic_buf = np.array([], dtype=np.float32)
+        # Locks and events
         self._lock = threading.Lock()
         self._restart_event = threading.Event()
-        # Microphone input
-        self._mic_device_name = None
-        self._mic_stream = None
-        self._mic_native_rate = 44100
-        self._mic_native_channels = 1
         self._mic_restart_event = threading.Event()
-        self._mic_buf = np.array([], dtype=np.float32)
 
-    def _get_wasapi_info(self):
-        for i in range(self._pa.get_host_api_count()):
-            info = self._pa.get_host_api_info_by_index(i)
-            if "WASAPI" in info["name"]:
-                return info
-        return None
-
-    def _get_default_output_name(self):
-        wasapi_info = self._get_wasapi_info()
-        if wasapi_info is None:
-            return None
-        default_idx = wasapi_info["defaultOutputDevice"]
-        default_dev = self._pa.get_device_info_by_index(default_idx)
-        return default_dev["name"]
-
-    @staticmethod
-    def _query_current_default():
-        """Create a fresh PA instance to get the actual current default device."""
-        pa = pyaudio.PyAudio()
-        try:
-            for i in range(pa.get_host_api_count()):
-                info = pa.get_host_api_info_by_index(i)
-                if "WASAPI" in info["name"]:
-                    default_idx = info["defaultOutputDevice"]
-                    dev = pa.get_device_info_by_index(default_idx)
-                    return dev["name"]
-        finally:
-            pa.terminate()
-        return None
-
-    def _find_loopback_device(self):
-        """Find WASAPI loopback device for the default output."""
-        wasapi_info = self._get_wasapi_info()
-        if wasapi_info is None:
-            raise RuntimeError("WASAPI host API not found")
-
-        default_output_idx = wasapi_info["defaultOutputDevice"]
-        default_output = self._pa.get_device_info_by_index(default_output_idx)
-        log.info(f"Default output: {default_output['name']}")
-
-        target_name = self._device_name or default_output["name"]
-
-        for i in range(self._pa.get_device_count()):
-            dev = self._pa.get_device_info_by_index(i)
-            if dev["hostApi"] == wasapi_info["index"] and dev.get(
-                "isLoopbackDevice", False
-            ):
-                if target_name in dev["name"]:
-                    return dev
-
-        # Fallback: any loopback device
-        for i in range(self._pa.get_device_count()):
-            dev = self._pa.get_device_info_by_index(i)
-            if dev.get("isLoopbackDevice", False):
-                return dev
-
-        raise RuntimeError("No WASAPI loopback device found")
-
-    def _open_stream(self):
-        """Open stream for current default loopback device."""
-        loopback_dev = self._find_loopback_device()
-        self._native_channels = loopback_dev["maxInputChannels"]
-        self._native_rate = int(loopback_dev["defaultSampleRate"])
-        self._current_device_name = loopback_dev["name"]
-
-        log.info(f"Loopback device: {loopback_dev['name']}")
-        log.info(
-            f"Native: {self._native_rate}Hz, {self._native_channels}ch -> {self.sample_rate}Hz mono"
-        )
-
-        native_chunk = int(self._native_rate * self.chunk_duration)
-
-        self._stream = self._pa.open(
-            format=pyaudio.paFloat32,
-            channels=self._native_channels,
-            rate=self._native_rate,
-            input=True,
-            input_device_index=loopback_dev["index"],
-            frames_per_buffer=native_chunk,
-        )
-
-    def _close_stream(self):
-        if self._stream:
-            try:
-                self._stream.stop_stream()
-                self._stream.close()
-            except Exception:
-                pass
-            self._stream = None
-
-    def _find_mic_device(self):
-        """Find WASAPI input device matching _mic_device_name, or system default."""
-        wasapi_info = self._get_wasapi_info()
-        if wasapi_info is None:
-            raise RuntimeError("WASAPI host API not found")
-        if self._mic_device_name in ("__default__", "default"):
-            default_idx = wasapi_info["defaultInputDevice"]
-            dev = self._pa.get_device_info_by_index(default_idx)
-            if dev["maxInputChannels"] > 0:
-                return dev
-            raise RuntimeError("Default input device has no input channels")
-        for i in range(self._pa.get_device_count()):
-            dev = self._pa.get_device_info_by_index(i)
-            if (
-                dev["hostApi"] == wasapi_info["index"]
-                and dev["maxInputChannels"] > 0
-                and not dev.get("isLoopbackDevice", False)
-                and dev["name"] == self._mic_device_name
-            ):
-                return dev
-        raise RuntimeError(f"Mic device not found: {self._mic_device_name}")
-
-    def _open_mic_stream(self):
-        """Open microphone input stream."""
-        dev = self._find_mic_device()
-        self._mic_native_channels = dev["maxInputChannels"]
-        self._mic_native_rate = int(dev["defaultSampleRate"])
-        native_chunk = int(self._mic_native_rate * self.chunk_duration)
-        log.info(
-            f"Mic device: {dev['name']} ({self._mic_native_rate}Hz, {self._mic_native_channels}ch)"
-        )
-        self._mic_stream = self._pa.open(
-            format=pyaudio.paFloat32,
-            channels=self._mic_native_channels,
-            rate=self._mic_native_rate,
-            input=True,
-            input_device_index=dev["index"],
-            frames_per_buffer=native_chunk,
-        )
-
-    def _close_mic_stream(self):
-        if self._mic_stream:
-            try:
-                self._mic_stream.stop_stream()
-                self._mic_stream.close()
-            except Exception:
-                pass
-            self._mic_stream = None
-
-    def set_mic_device(self, device_name):
-        """Change mic device at runtime. None = disabled."""
-        if device_name == self._mic_device_name:
-            return
-        log.info(f"Mic device changed: {self._mic_device_name} -> {device_name}")
-        self._mic_device_name = device_name
-        if self._running:
-            self._mic_restart_event.set()
+    # ── Public API ──────────────────────────────────────────────────────
 
     def set_device(self, device_name):
         """Change capture device at runtime. None = system default, '__disabled__' = off."""
@@ -240,33 +114,201 @@ class AudioCapture:
         if self._running:
             self._restart_event.set()
 
-    def _resample_to_mono(self, data, native_channels, native_rate):
-        """Convert raw bytes to mono float32 at self.sample_rate."""
-        audio = np.frombuffer(data, dtype=np.float32)
-        if native_channels > 1:
-            audio = audio.reshape(-1, native_channels).mean(axis=1)
-        if native_rate != self.sample_rate:
-            ratio = self.sample_rate / native_rate
-            n_out = int(len(audio) * ratio)
-            indices = np.arange(n_out) / ratio
-            indices = np.clip(indices, 0, len(audio) - 1)
-            idx_floor = indices.astype(np.int64)
-            idx_ceil = np.minimum(idx_floor + 1, len(audio) - 1)
-            frac = (indices - idx_floor).astype(np.float32)
-            audio = audio[idx_floor] * (1 - frac) + audio[idx_ceil] * frac
-        return audio
+    def set_mic_device(self, device_name):
+        """Change mic device at runtime. None = disabled."""
+        if device_name == self._mic_device_name:
+            return
+        log.info(f"Mic device changed: {self._mic_device_name} -> {device_name}")
+        self._mic_device_name = device_name
+        if self._running:
+            self._mic_restart_event.set()
 
-    def _restart_stream(self):
-        """Restart stream with new default device."""
+    def start(self):
+        self._loopback_disabled = self._device_name == "__disabled__"
+        self._open_capture_streams()
+        self._running = True
+        self._read_thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._read_thread.start()
+        log.info("Audio capture started")
+
+    def stop(self):
+        self._running = False
+        if self._read_thread:
+            self._read_thread.join(timeout=3)
+        self._close_capture_streams()
+        log.info("Audio capture stopped")
+
+    def get_audio(self, timeout=1.0):
+        try:
+            return self.audio_queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    # ── Internal: stream management ─────────────────────────────────────
+
+    def _get_loopback_source_name(self):
+        """Resolve the PulseAudio monitor source name for the target sink."""
+        pulse = pulsectl.Pulse("livetranslate-loopback")
+        try:
+            # Determine target sink name
+            if self._device_name is None:
+                # Use default sink
+                sink_info = pulse.get_sink_by_name(
+                    pulse.server_info().default_sink_name
+                )
+                target_sink_name = sink_info.name
+            else:
+                # Find sink by description
+                target_sink_name = _description_to_name(
+                    pulse, self._device_name, "sink"
+                )
+                if target_sink_name is None:
+                    log.warning(f"Sink not found: {self._device_name}, using default")
+                    sink_info = pulse.get_sink_by_name(
+                        pulse.server_info().default_sink_name
+                    )
+                    target_sink_name = sink_info.name
+
+            # Get monitor source for that sink
+            monitor_name = _monitor_name_for_sink(pulse, target_sink_name)
+            if monitor_name is None:
+                raise RuntimeError(
+                    f"No monitor source found for sink {target_sink_name}"
+                )
+
+            # Get sink description for logging
+            sink = pulse.get_sink_by_name(target_sink_name)
+            self._current_device_name = sink.description
+
+            log.info(
+                f"Loopback source: {monitor_name} (sink: {target_sink_name}, desc: {sink.description})"
+            )
+            return monitor_name
+        finally:
+            pulse.close()
+
+    def _get_mic_source_name(self):
+        """Resolve the PulseAudio source name for the mic."""
+        if not self._mic_device_name:
+            return None
+        if self._mic_device_name in ("__default__", "default"):
+            pulse = pulsectl.Pulse("livetranslate-mic")
+            try:
+                return pulse.server_info().default_source_name
+            finally:
+                pulse.close()
+
+        pulse = pulsectl.Pulse("livetranslate-mic")
+        try:
+            src_name = _description_to_name(
+                pulse, self._mic_device_name, "source"
+            )
+            if src_name is None:
+                log.warning(f"Mic source not found: {self._mic_device_name}")
+            return src_name
+        finally:
+            pulse.close()
+
+    def _open_loopback_stream(self):
+        """Start parec subprocess for loopback (monitor) capture."""
+        source_name = self._get_loopback_source_name()
+        if source_name is None:
+            raise RuntimeError("Could not determine loopback source")
+
+        chunk_size = int(self.sample_rate * self.chunk_duration)
+        cmd = [
+            "parec",
+            "--format=float32",
+            "--channels=1",
+            f"--rate={self.sample_rate}",
+            f"--latency-msec={int(self.chunk_duration * 1000)}",
+            f"--device={source_name}",
+            "--raw",
+        ]
+        log.debug(f"Starting parec (loopback): {' '.join(cmd)}")
+        self._loopback_proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=chunk_size * 4,  # float32 = 4 bytes
+        )
+
+    def _open_mic_stream(self):
+        """Start parec subprocess for microphone capture."""
+        source_name = self._get_mic_source_name()
+        if source_name is None:
+            log.warning("No mic source resolved, mic disabled")
+            return
+
+        chunk_size = int(self.sample_rate * self.chunk_duration)
+        cmd = [
+            "parec",
+            "--format=float32",
+            "--channels=1",
+            f"--rate={self.sample_rate}",
+            f"--latency-msec={int(self.chunk_duration * 1000)}",
+            f"--device={source_name}",
+            "--raw",
+        ]
+        log.debug(f"Starting parec (mic): {' '.join(cmd)}")
+        self._mic_proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=chunk_size * 4,
+        )
+
+    def _close_loopback_stream(self):
+        if self._loopback_proc:
+            try:
+                self._loopback_proc.terminate()
+                self._loopback_proc.wait(timeout=2)
+            except Exception:
+                try:
+                    self._loopback_proc.kill()
+                except Exception:
+                    pass
+            self._loopback_proc = None
+
+    def _close_mic_stream(self):
+        if self._mic_proc:
+            try:
+                self._mic_proc.terminate()
+                self._mic_proc.wait(timeout=2)
+            except Exception:
+                try:
+                    self._mic_proc.kill()
+                except Exception:
+                    pass
+            self._mic_proc = None
+
+    def _open_capture_streams(self):
+        if not self._loopback_disabled:
+            try:
+                self._open_loopback_stream()
+            except Exception as e:
+                log.error(f"Failed to open loopback stream: {e}")
+        else:
+            log.info("Loopback disabled (mic-only mode)")
+
+        if self._mic_device_name:
+            try:
+                self._open_mic_stream()
+            except Exception as e:
+                log.warning(f"Failed to open mic stream: {e}")
+
+    def _close_capture_streams(self):
+        self._close_loopback_stream()
+        self._close_mic_stream()
+
+    def _restart_streams(self):
+        """Restart all capture streams."""
         with self._lock:
-            self._close_stream()
-            self._pa.terminate()
-            self._pa = pyaudio.PyAudio()
+            self._close_capture_streams()
             if not self._loopback_disabled:
-                self._open_stream()
+                self._open_loopback_stream()
             else:
                 log.info("Loopback disabled (mic-only mode)")
-            # Re-open mic if active
             if self._mic_device_name:
                 self._close_mic_stream()
                 try:
@@ -274,22 +316,41 @@ class AudioCapture:
                 except Exception as e:
                     log.warning(f"Failed to re-open mic after restart: {e}")
 
+    def _read_parec_float32(self, proc, n_bytes):
+        """Read exactly n_bytes from parec stdout as float32 array."""
+        data = b""
+        while len(data) < n_bytes:
+            chunk = proc.stdout.read(n_bytes - len(data))
+            if not chunk:
+                # EOF — parec probably exited
+                return None
+            data += chunk
+        return np.frombuffer(data, dtype=np.float32)
+
+    # ── Read loop ───────────────────────────────────────────────────────
+
     def _read_loop(self):
-        """Synchronous read loop in a background thread."""
+        """Background thread: read audio chunks and push to queue."""
+        chunk_samples = int(self.sample_rate * self.chunk_duration)
+        chunk_bytes = chunk_samples * 4  # float32 = 4 bytes
+
         last_device_check = time.monotonic()
 
         while self._running:
-            # Handle pending loopback restart request
+            # Handle pending restart request
             if self._restart_event.is_set():
                 self._restart_event.clear()
                 try:
-                    self._restart_stream()
+                    self._restart_streams()
+                    # Drain old audio
                     while not self.audio_queue.empty():
                         try:
                             self.audio_queue.get_nowait()
                         except queue.Empty:
                             break
-                    log.info(f"Audio capture restarted on: {self._current_device_name}")
+                    log.info(
+                        f"Audio capture restarted on: {self._current_device_name}"
+                    )
                 except Exception as e:
                     log.error(f"Restart after device change failed: {e}")
                     time.sleep(0.5)
@@ -309,77 +370,55 @@ class AudioCapture:
                 else:
                     log.info("Mic disabled")
 
-            # Auto-switch only when using system default
-            now = time.monotonic()
-            if now - last_device_check > DEVICE_CHECK_INTERVAL:
-                last_device_check = now
-                if self._device_name is None:
-                    try:
-                        current_default = self._query_current_default()
-                        if (
-                            current_default
-                            and self._current_device_name
-                            and current_default not in self._current_device_name
-                        ):
-                            log.info(
-                                f"System default output changed: "
-                                f"{self._current_device_name} -> {current_default}"
-                            )
-                            log.info("Restarting audio capture for new device...")
-                            self._restart_stream()
-                            log.info(
-                                f"Audio capture restarted on: {self._current_device_name}"
-                            )
-                    except Exception as e:
-                        log.warning(f"Device check error: {e}")
-
-            # Read loopback chunk or generate silence for mic-only mode
+            # Read loopback chunk
             loopback_audio = None
             if self._loopback_disabled:
                 time.sleep(self.chunk_duration)
-                n_samples = int(self.sample_rate * self.chunk_duration)
-                loopback_audio = np.zeros(n_samples, dtype=np.float32)
-            else:
-                native_chunk = int(self._native_rate * self.chunk_duration)
-                try:
-                    data = None
-                    with self._lock:
-                        if not self._stream:
-                            time.sleep(0.005)
-                            continue
-                        if self._stream.get_read_available() >= native_chunk:
-                            data = self._stream.read(
-                                native_chunk, exception_on_overflow=False
+                loopback_audio = np.zeros(chunk_samples, dtype=np.float32)
+            elif self._loopback_proc:
+                with self._lock:
+                    if self._loopback_proc and self._loopback_proc.stdout:
+                        try:
+                            audio = self._read_parec_float32(
+                                self._loopback_proc, chunk_bytes
                             )
-                    if data is not None:
-                        loopback_audio = self._resample_to_mono(
-                            data, self._native_channels, self._native_rate
-                        )
-                except Exception as e:
-                    if self._restart_event.is_set():
-                        continue
-                    log.warning(f"Read error (device may have changed): {e}")
-                    try:
-                        time.sleep(0.5)
-                        self._restart_stream()
-                        log.info("Stream restarted after read error")
-                    except Exception as re:
-                        log.error(f"Restart failed: {re}")
-                        time.sleep(1)
-                    continue
+                            if audio is not None and len(audio) == chunk_samples:
+                                loopback_audio = audio
+                            elif audio is None:
+                                log.warning("parec (loopback) stream ended")
+                                time.sleep(0.5)
+                                self._restart_streams()
+                                continue
+                        except Exception as e:
+                            log.warning(f"Loopback read error: {e}")
+                            time.sleep(0.1)
+                            continue
 
-            # Drain all available mic data into buffer
-            if self._mic_stream:
+            # Read mic data
+            if self._mic_proc and self._mic_proc.stdout:
                 try:
-                    avail = self._mic_stream.get_read_available()
-                    if avail > 0:
-                        mic_data = self._mic_stream.read(
-                            avail, exception_on_overflow=False
+                    # Read all available mic data (non-blocking-ish: read what's there)
+                    import select
+                    import os
+
+                    fd = self._mic_proc.stdout.fileno()
+                    available = 0
+                    try:
+                        # Check how much is readable
+                        _, _, _ = select.select([fd], [], [], 0)
+                        import fcntl
+
+                        available = fcntl.fcntl(fd, fcntl.F_GETPIPE_SZ, 0)
+                        available = min(available, 65536)  # cap at 64KB
+                    except Exception:
+                        available = chunk_bytes
+
+                    if available >= chunk_bytes:
+                        mic_audio = self._read_parec_float32(
+                            self._mic_proc, available
                         )
-                        mic_16k = self._resample_to_mono(
-                            mic_data, self._mic_native_channels, self._mic_native_rate
-                        )
-                        self._mic_buf = np.concatenate([self._mic_buf, mic_16k])
+                        if mic_audio is not None:
+                            self._mic_buf = np.concatenate([self._mic_buf, mic_audio])
                 except Exception as e:
                     log.warning(f"Mic read error: {e}")
 
@@ -408,36 +447,32 @@ class AudioCapture:
                 self.audio_queue.get_nowait()
                 self.audio_queue.put_nowait((audio, mic_rms))
 
-    def start(self):
-        self._loopback_disabled = self._device_name == "__disabled__"
-        if not self._loopback_disabled:
-            self._open_stream()
-        else:
-            log.info("Loopback disabled (mic-only mode)")
-        if self._mic_device_name:
-            try:
-                self._open_mic_stream()
-            except Exception as e:
-                log.warning(f"Failed to open mic on start: {e}")
-        self._running = True
-        self._read_thread = threading.Thread(target=self._read_loop, daemon=True)
-        self._read_thread.start()
-        log.info("Audio capture started")
-
-    def stop(self):
-        self._running = False
-        if self._read_thread:
-            self._read_thread.join(timeout=3)
-        self._close_stream()
-        self._close_mic_stream()
-        log.info("Audio capture stopped")
-
-    def get_audio(self, timeout=1.0):
-        try:
-            return self.audio_queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
+            # Periodic device check (to detect default output changes)
+            now = time.monotonic()
+            if now - last_device_check > DEVICE_CHECK_INTERVAL:
+                last_device_check = now
+                if self._device_name is None:
+                    try:
+                        pulse = pulsectl.Pulse("livetranslate-check")
+                        try:
+                            current_default = pulse.server_info().default_sink_name
+                            if self._current_device_name:
+                                # Compare descriptions
+                                sink = pulse.get_sink_by_name(current_default)
+                                if sink.description != self._current_device_name:
+                                    log.info(
+                                        f"Default output changed: "
+                                        f"{self._current_device_name} -> {sink.description}"
+                                    )
+                                    log.info("Restarting audio capture...")
+                                    self._restart_streams()
+                                    log.info(
+                                        f"Audio capture restarted on: {self._current_device_name}"
+                                    )
+                        finally:
+                            pulse.close()
+                    except Exception as e:
+                        log.warning(f"Device check error: {e}")
 
     def __del__(self):
-        if self._pa:
-            self._pa.terminate()
+        self._close_capture_streams()
