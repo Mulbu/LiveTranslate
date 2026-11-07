@@ -108,9 +108,23 @@ def make_openai_client(
     if proxy == "system":
         pass
     elif proxy in ("none", "", None):
-        kwargs["http_client"] = httpx.Client(trust_env=False)
+        kwargs["http_client"] = httpx.Client(
+            trust_env=False,
+            http2=True,
+            limits=httpx.Limits(
+                max_keepalive_connections=10,
+                keepalive_expiry=60.0,
+            ),
+        )
     else:
-        kwargs["http_client"] = httpx.Client(proxy=proxy)
+        kwargs["http_client"] = httpx.Client(
+            proxy=proxy,
+            http2=True,
+            limits=httpx.Limits(
+                max_keepalive_connections=10,
+                keepalive_expiry=60.0,
+            ),
+        )
     return OpenAI(**kwargs)
 
 
@@ -303,7 +317,7 @@ class Translator:
                 kwargs[k] = self._overrides[k]
         extra_body = {}
         if self._no_think:
-            extra_body["enable_thinking"] = False
+            extra_body["thinking"] = {"type": "disabled"}
         if self._extra_body:
             extra_body.update(self._extra_body)
         if extra_body:
@@ -355,14 +369,10 @@ class Translator:
         # Streaming path
         self._last_prompt_tokens = 0
         self._last_completion_tokens = 0
+        t0 = time.perf_counter()
+        ttft = None
         base_kwargs = self._build_request_kwargs(system_prompt, text, stream=True)
-        try:
-            stream = self._client.chat.completions.create(
-                **base_kwargs,
-                stream_options={"include_usage": True},
-            )
-        except Exception:
-            stream = self._client.chat.completions.create(**base_kwargs)
+        stream = self._client.chat.completions.create(**base_kwargs)
 
         deadline = time.monotonic() + self._timeout
         chunks = []
@@ -372,6 +382,8 @@ class Translator:
                 raise TimeoutError(
                     f"Translation exceeded {self._timeout}s total timeout"
                 )
+            if ttft is None and chunk.choices:
+                ttft = (time.perf_counter() - t0) * 1000
             if hasattr(chunk, "usage") and chunk.usage:
                 self._last_prompt_tokens = chunk.usage.prompt_tokens or 0
                 self._last_completion_tokens = chunk.usage.completion_tokens or 0
@@ -381,7 +393,12 @@ class Translator:
                     chunks.append(delta.content)
                     if not self._json_response:
                         yield "".join(chunks)
+        total_ms = (time.perf_counter() - t0) * 1000
         result = "".join(chunks).strip()
+        log.info(
+            f"Stream TL: ttft={ttft:.0f}ms total={total_ms:.0f}ms "
+            f"len={len(result)} tok={self._last_completion_tokens}"
+        )
         if self._json_response:
             result = self._extract_json_translation(result)
         if self._check_repetition(result):
@@ -410,8 +427,10 @@ class Translator:
         return False
 
     def _translate_sync(self, system_prompt, text):
+        t0 = time.perf_counter()
         kwargs = self._build_request_kwargs(system_prompt, text, stream=False)
         resp = self._client.chat.completions.create(**kwargs)
+        total_ms = (time.perf_counter() - t0) * 1000
         self._last_prompt_tokens = 0
         self._last_completion_tokens = 0
         if resp.usage:
@@ -420,19 +439,19 @@ class Translator:
         result = resp.choices[0].message.content.strip()
         if self._json_response:
             result = self._extract_json_translation(result)
+        log.info(
+            f"Sync TL: total={total_ms:.0f}ms "
+            f"len={len(result)} tok={self._last_completion_tokens}"
+        )
         return result
 
     def _translate_streaming(self, system_prompt, text):
         self._last_prompt_tokens = 0
         self._last_completion_tokens = 0
+        t0 = time.perf_counter()
+        ttft = None
         base_kwargs = self._build_request_kwargs(system_prompt, text, stream=True)
-        try:
-            stream = self._client.chat.completions.create(
-                **base_kwargs,
-                stream_options={"include_usage": True},
-            )
-        except Exception:
-            stream = self._client.chat.completions.create(**base_kwargs)
+        stream = self._client.chat.completions.create(**base_kwargs)
 
         deadline = time.monotonic() + self._timeout
         chunks = []
@@ -442,6 +461,8 @@ class Translator:
                 raise TimeoutError(
                     f"Translation exceeded {self._timeout}s total timeout"
                 )
+            if ttft is None and chunk.choices:
+                ttft = (time.perf_counter() - t0) * 1000
             if hasattr(chunk, "usage") and chunk.usage:
                 self._last_prompt_tokens = chunk.usage.prompt_tokens or 0
                 self._last_completion_tokens = chunk.usage.completion_tokens or 0
@@ -449,7 +470,12 @@ class Translator:
                 delta = chunk.choices[0].delta
                 if delta.content:
                     chunks.append(delta.content)
+        total_ms = (time.perf_counter() - t0) * 1000
         result = "".join(chunks).strip()
+        log.info(
+            f"Stream TL: ttft={ttft:.0f}ms total={total_ms:.0f}ms "
+            f"len={len(result)} tok={self._last_completion_tokens}"
+        )
         if self._json_response:
             result = self._extract_json_translation(result)
         return result

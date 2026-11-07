@@ -1159,13 +1159,6 @@ class LiveTranslateApp:
                 else:
                     log.error(f"Extra translate error: {e}", exc_info=True)
 
-    def _translate_subwin_only(self, text, source_lang, extra_langs):
-        """Translate only for subtitle window when primary target == source language."""
-        tl_dict = {self._target_language: text}  # same language, use original
-        self._translate_extra_langs(text, source_lang, extra_langs, tl_dict)
-        if self._subwin and self._subwin.isVisible():
-            self._subwin.update_text(text, tl_dict)
-
     def start(self):
         if self._running:
             return
@@ -1322,37 +1315,13 @@ class LiveTranslateApp:
             # Remove primary target and source (no need to translate those)
             extra_langs = subwin_langs - {target_lang, source_lang}
 
-        if source_lang == target_lang:
-            log.info(f"Same language ({source_lang}), no translation")
-            self._transcript.finalize_no_translation(msg_id)
-            if self._overlay:
-                self._overlay.update_translation(msg_id, "", 0)
-                self._overlay.update_stats(
-                    self._asr_count,
-                    self._translate_count,
-                    self._total_prompt_tokens,
-                    self._total_completion_tokens,
-                    self._compute_cost(),
-                )
-            if self._subwin and self._subwin.isVisible():
-                # Primary is same language; still need to translate extra langs
-                if extra_langs:
-                    try:
-                        self._tl_executor.submit(
-                            self._translate_subwin_only, original_text, source_lang, extra_langs
-                        )
-                    except RuntimeError:
-                        pass
-                else:
-                    self._subwin.update_text(original_text, {target_lang: original_text})
-        else:
-            try:
-                self._tl_executor.submit(
-                    self._translate_async, msg_id, original_text, source_lang,
-                    extra_langs or None,
-                )
-            except RuntimeError:
-                log.warning("Translation executor shut down, skipping")
+        try:
+            self._tl_executor.submit(
+                self._translate_async, msg_id, original_text, source_lang,
+                extra_langs or None,
+            )
+        except RuntimeError:
+            log.warning("Translation executor shut down, skipping")
 
     # ── Incremental ASR ──
 
@@ -1559,25 +1528,10 @@ class LiveTranslateApp:
             subwin_langs = self._subwin.get_target_languages()
             extra_langs = subwin_langs - {target_lang, source_lang}
 
-        if source_lang == target_lang:
-            log.info(f"Same language ({source_lang}), no translation")
-            self._transcript.finalize_no_translation(msg_id)
-            if self._overlay:
-                self._overlay.update_translation(msg_id, "", 0)
-                self._overlay.update_stats(self._asr_count, self._translate_count, self._total_prompt_tokens, self._total_completion_tokens, self._compute_cost())
-            if self._subwin and self._subwin.isVisible():
-                if extra_langs:
-                    try:
-                        self._tl_executor.submit(self._translate_subwin_only, original_text, source_lang, extra_langs)
-                    except RuntimeError:
-                        pass
-                else:
-                    self._subwin.update_text(original_text, {target_lang: original_text})
-        else:
-            try:
-                self._tl_executor.submit(self._translate_async, msg_id, original_text, source_lang, extra_langs or None)
-            except RuntimeError:
-                log.warning("Translation executor shut down, skipping")
+        try:
+            self._tl_executor.submit(self._translate_async, msg_id, original_text, source_lang, extra_langs or None)
+        except RuntimeError:
+            log.warning("Translation executor shut down, skipping")
     def _process_interim_final(self, speech_segment):
         """Handle VAD flush after interim outputs were already made."""
         seg_len = len(speech_segment) / 16000
