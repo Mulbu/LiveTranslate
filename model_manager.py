@@ -154,10 +154,16 @@ _MODEL_SIZE_BYTES = {
     "whisper-small": 488_000_000,
     "whisper-medium": 1_530_000_000,
     "whisper-large-v3": 3_100_000_000,
+    "whisper-large-v3-turbo": 1_700_000_000,
     "anime-whisper": 3_100_000_000,
 }
 
-_WHISPER_SIZES = ["tiny", "base", "small", "medium", "large-v3"]
+_WHISPER_SIZES = ["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"]
+
+# Extra faster-whisper-compatible HF repo IDs (e.g. Japanese-tuned models)
+_EXTRA_WHISPER_MODELS = {
+    "kotoba-whisper-v2": "kotoba-tech/kotoba-whisper-v2.0-faster",
+}
 
 _CACHE_MODELS = [
     ("SenseVoice Small", "funasr", "sensevoice-small"),
@@ -443,7 +449,16 @@ def is_asr_cached(engine_type, model_size="medium", hub="ms") -> bool:
         return False
     elif engine_type == "whisper":
         if model_size not in _WHISPER_SIZES:
+            # Check extra models (HF repo IDs)
+            if model_size in _EXTRA_WHISPER_MODELS:
+                repo_id = _EXTRA_WHISPER_MODELS[model_size]
+                parts = repo_id.split("/", 1)
+                return _hf_repo_complete(parts[0], parts[1], min_bytes=50_000_000)
             return resolve_custom_whisper_model(model_size) is not None
+        if model_size == "large-v3-turbo":
+            return _hf_repo_complete(
+                "Systran", "faster-whisper-large-v3-turbo", min_bytes=50_000_000
+            )
         min_bytes = int(
             _MODEL_SIZE_BYTES.get(f"whisper-{model_size}", 50_000_000) * 0.5
         )
@@ -464,7 +479,7 @@ def get_missing_models(engine, model_size, hub) -> list:
             }
         )
     if not is_asr_cached(engine, model_size, hub):
-        if engine == "whisper" and model_size not in _WHISPER_SIZES:
+        if engine == "whisper" and model_size not in _WHISPER_SIZES and model_size not in _EXTRA_WHISPER_MODELS:
             return missing
         if engine == "funasr" or engine in FUNASR_LEGACY_ENGINE_ALIASES:
             model_key = (
@@ -659,11 +674,16 @@ def download_asr(engine, model_size="medium", hub="ms", proxy="system"):
             log.info(f"Downloading {model_id} from HuggingFace...")
             snapshot_download(repo_id=model_id, cache_dir=hf_cache)
         elif engine == "whisper":
-            if model_size not in _WHISPER_SIZES:
-                raise ValueError(f"Invalid local faster-whisper model: {model_size}")
             from huggingface_hub import snapshot_download
 
-            model_id = f"Systran/faster-whisper-{model_size}"
+            if model_size in _EXTRA_WHISPER_MODELS:
+                model_id = _EXTRA_WHISPER_MODELS[model_size]
+            elif model_size == "large-v3-turbo":
+                model_id = "Systran/faster-whisper-large-v3-turbo"
+            elif model_size in _WHISPER_SIZES:
+                model_id = f"Systran/faster-whisper-{model_size}"
+            else:
+                raise ValueError(f"Invalid faster-whisper model: {model_size}")
             log.info(f"Downloading {model_id} from HuggingFace...")
             snapshot_download(repo_id=model_id, cache_dir=hf_cache)
     log.info(f"ASR model downloaded: {engine}")

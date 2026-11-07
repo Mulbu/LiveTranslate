@@ -1180,6 +1180,12 @@ class ControlPanel(QWidget):
         for size in _WHISPER_SIZES:
             self._whisper_size_combo.addItem(size, size)
 
+        # Extra models (HF repo IDs for Japanese-tuned etc.)
+        from model_manager import _EXTRA_WHISPER_MODELS
+
+        for label, repo_id in _EXTRA_WHISPER_MODELS.items():
+            self._whisper_size_combo.addItem(label, repo_id)
+
         local_prefix = t("whisper_local_prefix")
         for item in list_local_faster_whisper_models():
             idx = self._whisper_size_combo.count()
@@ -1205,11 +1211,12 @@ class ControlPanel(QWidget):
             self._whisper_size_combo.setCurrentIndex(idx)
 
     def _update_whisper_size_label(self):
-        from model_manager import is_asr_cached, _MODEL_SIZE_BYTES
+        from model_manager import is_asr_cached, _MODEL_SIZE_BYTES, _EXTRA_WHISPER_MODELS
 
         size = self._selected_whisper_model()
         cached = is_asr_cached("whisper", size, self._current_settings.get("hub", "ms"))
-        if size not in _WHISPER_SIZES:
+        is_extra = size in _EXTRA_WHISPER_MODELS.values() or size in _EXTRA_WHISPER_MODELS
+        if size not in _WHISPER_SIZES and not is_extra:
             if cached:
                 self._whisper_status.setText(t("whisper_local_ready"))
                 self._whisper_status.setStyleSheet("color: #4a4; font-size: 11px;")
@@ -1241,10 +1248,11 @@ class ControlPanel(QWidget):
             self._auto_save()
 
     def _download_whisper(self):
-        from model_manager import is_asr_cached, get_missing_models
+        from model_manager import is_asr_cached, get_missing_models, _EXTRA_WHISPER_MODELS
 
         size = self._selected_whisper_model()
-        if size not in _WHISPER_SIZES:
+        is_extra = size in _EXTRA_WHISPER_MODELS.values() or size in _EXTRA_WHISPER_MODELS
+        if size not in _WHISPER_SIZES and not is_extra:
             return
         hub = self._current_settings.get("hub", "ms")
         if is_asr_cached("whisper", size, hub):
